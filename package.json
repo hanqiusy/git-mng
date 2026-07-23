@@ -1,0 +1,25 @@
+{
+  "name": "git-mng",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:web": "npm run dev -w web -- --host 127.0.0.1",
+    "build": "npm run build -w web",
+    "build:desktop": "tauri build --no-bundle && node scripts/package-portable.mjs",
+    "package:portable": "node scripts/package-portable.mjs",
+    "generate-icons": "node scripts/generate-icons.mjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-shell": "^2"
+  }
+}

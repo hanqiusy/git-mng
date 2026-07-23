@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+web/dist/
+dist-portable/
+src-tauri/target/
+src-tauri/gen/
+
+# local data / secrets
+data/
+**/db.json
+.env
+.env.*
+!.env.example
+
+# logs & OS
+*.log
+*.log.*
+*.out
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# caches
+**/.vite/
+*.tsbuildinfo
