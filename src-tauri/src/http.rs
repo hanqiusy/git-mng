@@ -17,9 +17,8 @@ pub fn build_client(settings: &Settings) -> AppResult<reqwest::Client> {
         builder = builder.danger_accept_invalid_certs(true);
     }
     if let Some(p) = proxy {
-        let proxy = reqwest::Proxy::all(&p).map_err(|e| {
-            AppError::with_detail("BAD_REQUEST", "代理地址无效", e.to_string())
-        })?;
+        let proxy = reqwest::Proxy::all(&p)
+            .map_err(|e| AppError::with_detail("BAD_REQUEST", "代理地址无效", e.to_string()))?;
         builder = builder.proxy(proxy);
     } else {
         builder = builder.no_proxy();
@@ -29,9 +28,7 @@ pub fn build_client(settings: &Settings) -> AppResult<reqwest::Client> {
         .map_err(|e| AppError::with_detail("INTERNAL_ERROR", "创建 HTTP 客户端失败", e.to_string()))
 }
 
-pub async fn send_with_retry<F, Fut>(
-    mut attempt: F,
-) -> Result<reqwest::Response, reqwest::Error>
+pub async fn send_with_retry<F, Fut>(mut attempt: F) -> Result<reqwest::Response, reqwest::Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -41,10 +38,8 @@ where
         match attempt().await {
             Ok(res) => return Ok(res),
             Err(e) => {
-                let retryable = e.is_timeout()
-                    || e.is_connect()
-                    || e.is_request()
-                    || e.status().is_none();
+                let retryable =
+                    e.is_timeout() || e.is_connect() || e.is_request() || e.status().is_none();
                 last = Some(e);
                 if !retryable || i == 2 {
                     break;

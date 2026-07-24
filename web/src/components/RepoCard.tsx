@@ -12,11 +12,19 @@ interface RepoCardProps {
   starred: boolean;
   starLoading?: boolean;
   onClone: () => void;
+  onLink: () => void;
   onToggleStar: () => void;
 }
 
 /** F2.4 仓库条目：名称、可见性徽章、语言、star/fork、默认分支、更新时间、本地克隆标记 */
-export default function RepoCard({ repo, starred, starLoading, onClone, onToggleStar }: RepoCardProps) {
+export default function RepoCard({
+  repo,
+  starred,
+  starLoading,
+  onClone,
+  onLink,
+  onToggleStar,
+}: RepoCardProps) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -50,7 +58,7 @@ export default function RepoCard({ repo, starred, starLoading, onClone, onToggle
             <span>更新于 {formatTime(repo.updatedAt)}</span>
           </div>
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
           <Btn
             onClick={onToggleStar}
             loading={starLoading}
@@ -61,6 +69,7 @@ export default function RepoCard({ repo, starred, starLoading, onClone, onToggle
           <Btn variant="primary" onClick={onClone}>
             克隆
           </Btn>
+          <Btn onClick={onLink}>链接文件夹</Btn>
         </div>
       </div>
     </div>

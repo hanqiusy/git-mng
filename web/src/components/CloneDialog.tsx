@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ApiError, api } from '../api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../api';
 import { pickFolder } from '../lib/pickFolder';
 import Modal from './Modal';
 import { Btn, Spinner } from './ui';
@@ -12,6 +12,14 @@ export interface CloneTarget {
   private?: boolean;
 }
 
+function buildDefaultClonePath(root: string, repo: string) {
+  const normalizedRoot = root.trim().replace(/[\\/]+$/, '');
+  if (!normalizedRoot) return repo;
+  const separator =
+    normalizedRoot.includes('\\') || /^[A-Za-z]:/.test(normalizedRoot) ? '\\' : '/';
+  return `${normalizedRoot}${separator}${repo}`;
+}
+
 interface CloneDialogProps {
   target: CloneTarget | null;
   onClose: () => void;
@@ -22,6 +30,7 @@ interface CloneDialogProps {
 /** F4.1 克隆对话框：目标路径 + 默认根目录生成 + 分支/标签下拉 + 浅克隆选项 */
 export default function CloneDialog({ target, onClose, onCloned }: CloneDialogProps) {
   const toast = useToast();
+  const defaultRoot = useRef<string | null>(null);
   const [path, setPath] = useState('');
   const [refType, setRefType] = useState<'branch' | 'tag'>('branch');
   const [ref, setRef] = useState('');
@@ -31,34 +40,75 @@ export default function CloneDialog({ target, onClose, onCloned }: CloneDialogPr
   const [refsLoading, setRefsLoading] = useState(false);
   const [rootLoading, setRootLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [linkPrompt, setLinkPrompt] = useState(false);
-  const [linking, setLinking] = useState(false);
+
+  // 页面加载后预取设置，用户点击“克隆”时通常可立即得到完整默认路径。
+  useEffect(() => {
+    api
+      .getSettings()
+      .then(({ settings }) => {
+        defaultRoot.current = settings.defaultCloneRoot;
+      })
+      .catch(() => {
+        /* 打开克隆弹窗时会重试并显示错误 */
+      });
+  }, []);
 
   // 打开时加载分支与标签
   useEffect(() => {
     if (!target) return;
-    setPath('');
+    let cancelled = false;
+    setPath(
+      defaultRoot.current === null
+        ? target.repo
+        : buildDefaultClonePath(defaultRoot.current, target.repo),
+    );
     setRefType('branch');
     setShallow(false);
     setRef(target.defaultBranch ?? '');
     setBranches([]);
     setTags([]);
-    setLinkPrompt(false);
+    if (defaultRoot.current === null) {
+      setRootLoading(true);
+      api
+        .getSettings()
+        .then(({ settings }) => {
+          defaultRoot.current = settings.defaultCloneRoot;
+          if (!cancelled) setPath(buildDefaultClonePath(settings.defaultCloneRoot, target.repo));
+        })
+        .catch((err) => {
+          if (!cancelled) toast.error(err, '读取默认克隆根目录失败');
+        })
+        .finally(() => {
+          if (!cancelled) setRootLoading(false);
+        });
+    } else {
+      setRootLoading(false);
+    }
     setRefsLoading(true);
     Promise.allSettled([
       api.listBranches(target.owner, target.repo),
       api.listTags(target.owner, target.repo),
     ]).then(([b, t]) => {
+      if (cancelled) return;
       if (b.status === 'fulfilled') {
         const names = b.value.items.map((x) => x.name);
         setBranches(names);
-        setRef((cur) => cur || target.defaultBranch || names[0] || '');
+        setRef(
+          names.length === 0
+            ? ''
+            : names.includes(target.defaultBranch ?? '')
+              ? target.defaultBranch ?? ''
+              : names[0],
+        );
       } else {
         toast.error(b.reason, '分支列表加载失败');
       }
       if (t.status === 'fulfilled') setTags(t.value.items.map((x) => x.name));
       setRefsLoading(false);
     });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
 
@@ -69,9 +119,8 @@ export default function CloneDialog({ target, onClose, onCloned }: CloneDialogPr
     setRootLoading(true);
     try {
       const { settings } = await api.getSettings();
-      const root = settings.defaultCloneRoot.replace(/[\\/]+$/, '');
-      const sep = root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/';
-      setPath(`${root}${sep}${target.owner}__${target.repo}`);
+      defaultRoot.current = settings.defaultCloneRoot;
+      setPath(buildDefaultClonePath(settings.defaultCloneRoot, target.repo));
     } catch (err) {
       toast.error(err, '读取默认克隆根目录失败');
     } finally {
@@ -99,51 +148,27 @@ export default function CloneDialog({ target, onClose, onCloned }: CloneDialogPr
       return;
     }
     setSubmitting(true);
-    setLinkPrompt(false);
     try {
       await api.clone(cloneArgs()!);
       toast.success(`已克隆 ${target.owner}/${target.repo}`);
       onCloned?.();
       onClose();
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'PATH_NOT_EMPTY') {
-        setLinkPrompt(true);
-      } else {
-        toast.error(err, '克隆失败');
-      }
+      toast.error(err, '克隆失败');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const confirmLink = async () => {
-    if (!target) return;
-    const args = cloneArgs();
-    if (!args) return;
-    setLinking(true);
-    try {
-      await api.linkClone(args);
-      toast.success(`已关联本地目录到 ${target.owner}/${target.repo}`);
-      setLinkPrompt(false);
-      onCloned?.();
-      onClose();
-    } catch (err) {
-      toast.error(err, '关联失败');
-    } finally {
-      setLinking(false);
-    }
-  };
-
   return (
-    <>
       <Modal
         title={target ? `克隆 ${target.owner}/${target.repo}` : ''}
-        open={!!target && !linkPrompt}
+        open={!!target}
         onClose={onClose}
         footer={
           <>
             <Btn onClick={onClose}>取消</Btn>
-            <Btn variant="primary" loading={submitting} onClick={submit}>
+            <Btn variant="primary" loading={submitting} disabled={rootLoading} onClick={submit}>
               {submitting ? '克隆中…' : '开始克隆'}
             </Btn>
           </>
@@ -155,9 +180,10 @@ export default function CloneDialog({ target, onClose, onCloned }: CloneDialogPr
             <div className="flex flex-wrap gap-2">
               <input
                 className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-                placeholder="例如 D:\github-clones\octocat__hello-world"
+                placeholder="例如 D:\github-clones\hello-world"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
+                disabled={rootLoading}
               />
               <Btn
                 type="button"
@@ -225,35 +251,5 @@ export default function CloneDialog({ target, onClose, onCloned }: CloneDialogPr
           </label>
         </div>
       </Modal>
-
-      <Modal
-        title="目录已存在"
-        open={!!target && linkPrompt}
-        onClose={() => !linking && setLinkPrompt(false)}
-        footer={
-          <>
-            <Btn onClick={() => setLinkPrompt(false)} disabled={linking}>
-              取消
-            </Btn>
-            <Btn variant="primary" loading={linking} onClick={() => void confirmLink()}>
-              关联此目录
-            </Btn>
-          </>
-        }
-      >
-        <p className="text-sm text-slate-700">
-          路径{' '}
-          <code className="break-all rounded bg-slate-100 px-1 text-xs">{path.trim()}</code>{' '}
-          已存在且非空。
-        </p>
-        <p className="mt-2 text-sm text-slate-600">
-          是否将此目录关联为{' '}
-          <span className="font-medium text-slate-800">
-            {target?.owner}/{target?.repo}
-          </span>{' '}
-          的本地路径？不会重新克隆；关联前会校验是否为对应 GitHub 仓库。
-        </p>
-      </Modal>
-    </>
   );
 }

@@ -124,8 +124,8 @@ function Shell() {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-100">
-      <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-white">
+    <div className="flex h-screen overflow-hidden bg-slate-100">
+      <aside className="flex h-full w-40 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white">
         <div className="border-b border-slate-100 px-4 py-4">
           <h1 className="text-sm font-bold text-slate-800">GitHub 仓库管理</h1>
         </div>
@@ -146,8 +146,8 @@ function Shell() {
         </nav>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-end gap-3 border-b border-slate-200 bg-white px-6 py-2.5">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex shrink-0 items-center justify-end gap-3 border-b border-slate-200 bg-white px-4 py-2.5">
           <div className="relative">
             <button
               type="button"
@@ -206,7 +206,7 @@ function Shell() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
           {page === 'my' && <MyRepos key={user.login} user={user} />}
           {page === 'search' && <Search key={user.login} user={user} />}
           {page === 'local' && <Local key={user.login} user={user} />}

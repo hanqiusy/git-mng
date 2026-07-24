@@ -1,6 +1,6 @@
 [package]
 name = "git-mng"
-version = "0.1.0"
+version = "1.0.0"
 description = "GitHub 仓库管理工具"
 authors = ["git-mng"]
 edition = "2021"

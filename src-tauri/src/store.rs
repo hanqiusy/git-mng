@@ -172,9 +172,10 @@ impl Store {
     }
 
     pub fn active_account_id(&self) -> Option<String> {
-        self.db.active_account_id.clone().or_else(|| {
-            self.db.accounts.first().map(|a| a.id.clone())
-        })
+        self.db
+            .active_account_id
+            .clone()
+            .or_else(|| self.db.accounts.first().map(|a| a.id.clone()))
     }
 
     pub fn upsert_account(

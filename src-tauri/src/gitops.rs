@@ -8,6 +8,29 @@ use std::process::Command;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    pub name: String,
+    pub current: bool,
+    pub upstream: Option<String>,
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
+    pub commit: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphCommit {
+    pub id: String,
+    pub short_id: String,
+    pub parents: Vec<String>,
+    pub date: String,
+    pub subject: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
     pub state: String,
     pub branch: Option<String>,
@@ -15,8 +38,14 @@ pub struct RepoStatus {
     pub ahead: Option<u64>,
     pub behind: Option<u64>,
     pub last_commit: Option<String>,
+    pub local_branches: Vec<BranchInfo>,
+    pub remote_branches: Vec<BranchInfo>,
+    pub graph: Vec<GraphCommit>,
+    pub remote_refreshed: bool,
+    pub remote_refresh_error: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct GitRunner {
     proxy: Option<String>,
     ssl_verify: bool,
@@ -63,6 +92,7 @@ impl GitRunner {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
         let output = cmd.output().map_err(|e| {
             AppError::with_detail(
                 "GIT_SPAWN_FAILED",
@@ -80,10 +110,7 @@ impl GitRunner {
                 redact_token(&format!("{stderr}\n{stdout}"), token),
             ));
         }
-        Ok((
-            redact_token(&stdout, token),
-            redact_token(&stderr, token),
-        ))
+        Ok((redact_token(&stdout, token), redact_token(&stderr, token)))
     }
 
     pub fn build_clone_url(full_name: &str, token: Option<&str>) -> String {
@@ -104,7 +131,7 @@ impl GitRunner {
         if is_non_empty_dir(target) {
             return Err(AppError::new(
                 "PATH_NOT_EMPTY",
-                "目标目录已存在。可选择关联该目录，或更换其他路径。",
+                "目标目录已存在且非空，请更换目标路径；如需使用已有文件夹，请使用“链接本地文件夹”。",
             ));
         }
         if let Some(parent) = target.parent() {
@@ -136,7 +163,145 @@ impl GitRunner {
         }
     }
 
-    pub fn get_clone_status(&self, path: &Path) -> RepoStatus {
+    fn list_local_branches(&self, path: &Path) -> Vec<BranchInfo> {
+        let Ok((output, _)) = self.run(
+            Some(path),
+            &[
+                "for-each-ref",
+                "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream)\t%(upstream:short)\t%(objectname:short)\t%(subject)",
+                "refs/heads",
+            ],
+        ) else {
+            return vec![];
+        };
+
+        output
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<_> = line.splitn(7, '\t').collect();
+                if fields.len() != 7 {
+                    return None;
+                }
+                let (ahead, behind) = if fields[3].is_empty() {
+                    (None, None)
+                } else {
+                    let range = format!("{}...{}", fields[0], fields[3]);
+                    self.run(Some(path), &["rev-list", "--left-right", "--count", &range])
+                        .ok()
+                        .and_then(|(counts, _)| {
+                            let values: Vec<_> = counts.split_whitespace().collect();
+                            (values.len() >= 2).then(|| {
+                                (values[0].parse::<u64>().ok(), values[1].parse::<u64>().ok())
+                            })
+                        })
+                        .unwrap_or((None, None))
+                };
+                Some(BranchInfo {
+                    name: fields[1].to_string(),
+                    current: fields[2] == "*",
+                    upstream: (!fields[4].is_empty()).then(|| fields[4].to_string()),
+                    ahead,
+                    behind,
+                    commit: fields[5].to_string(),
+                    subject: fields[6].to_string(),
+                })
+            })
+            .collect()
+    }
+
+    fn list_remote_branches(&self, path: &Path) -> Vec<BranchInfo> {
+        let Ok((output, _)) = self.run(
+            Some(path),
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)\t%(symref)\t%(objectname:short)\t%(subject)",
+                "refs/remotes",
+            ],
+        ) else {
+            return vec![];
+        };
+
+        output
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<_> = line.splitn(4, '\t').collect();
+                if fields.len() != 4 || !fields[1].is_empty() || fields[0].ends_with("/HEAD") {
+                    return None;
+                }
+                Some(BranchInfo {
+                    name: fields[0].to_string(),
+                    current: false,
+                    upstream: None,
+                    ahead: None,
+                    behind: None,
+                    commit: fields[2].to_string(),
+                    subject: fields[3].to_string(),
+                })
+            })
+            .collect()
+    }
+
+    fn get_graph(&self, path: &Path) -> Vec<GraphCommit> {
+        self.run(
+            Some(path),
+            &[
+                "log",
+                "--topo-order",
+                "--decorate=short",
+                "--date=short",
+                "--pretty=format:%H%x1f%h%x1f%P%x1f%ad%x1f%s%x1f%D",
+                "--all",
+                "--max-count=80",
+            ],
+        )
+        .ok()
+        .map(|(output, _)| {
+            output
+                .lines()
+                .filter_map(|line| {
+                    let fields: Vec<_> = line.splitn(6, '\u{1f}').collect();
+                    if fields.len() != 6 {
+                        return None;
+                    }
+                    Some(GraphCommit {
+                        id: fields[0].to_string(),
+                        short_id: fields[1].to_string(),
+                        parents: fields[2].split_whitespace().map(str::to_string).collect(),
+                        date: fields[3].to_string(),
+                        subject: fields[4].to_string(),
+                        refs: fields[5]
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn refresh_remote_refs(&self, path: &Path) -> AppResult<()> {
+        self.run(
+            Some(path),
+            &[
+                "-c",
+                "http.lowSpeedLimit=1",
+                "-c",
+                "http.lowSpeedTime=12",
+                "-c",
+                "credential.interactive=never",
+                "fetch",
+                "--prune",
+                "--no-tags",
+                "origin",
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_clone_status(&self, path: &Path, refresh_remote: bool) -> RepoStatus {
         let unknown = RepoStatus {
             state: "unknown".into(),
             branch: None,
@@ -144,10 +309,23 @@ impl GitRunner {
             ahead: None,
             behind: None,
             last_commit: None,
+            local_branches: vec![],
+            remote_branches: vec![],
+            graph: vec![],
+            remote_refreshed: false,
+            remote_refresh_error: None,
         };
         if !path.exists() {
             return unknown;
         }
+        let (remote_refreshed, remote_refresh_error) = if refresh_remote {
+            match self.refresh_remote_refs(path) {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error.detail.unwrap_or(error.message))),
+            }
+        } else {
+            (false, None)
+        };
         let branch = self
             .run(Some(path), &["rev-parse", "--abbrev-ref", "HEAD"])
             .ok()
@@ -156,11 +334,7 @@ impl GitRunner {
         let dirty = self
             .run(Some(path), &["status", "--porcelain"])
             .ok()
-            .map(|(o, _)| {
-                o.lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .count() as u64
-            });
+            .map(|(o, _)| o.lines().filter(|l| !l.trim().is_empty()).count() as u64);
         let (ahead, behind) = self
             .run(
                 Some(path),
@@ -181,6 +355,9 @@ impl GitRunner {
             .ok()
             .map(|(o, _)| o.trim().to_string())
             .filter(|s| !s.is_empty());
+        let local_branches = self.list_local_branches(path);
+        let remote_branches = self.list_remote_branches(path);
+        let graph = self.get_graph(path);
 
         let dirty_n = dirty.unwrap_or(0);
         let state = if dirty_n > 0 {
@@ -203,6 +380,11 @@ impl GitRunner {
             ahead,
             behind,
             last_commit,
+            local_branches,
+            remote_branches,
+            graph,
+            remote_refreshed,
+            remote_refresh_error,
         }
     }
 
@@ -210,7 +392,12 @@ impl GitRunner {
         let has_upstream = self
             .run(
                 Some(path),
-                &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
             )
             .is_ok();
         if has_upstream {
@@ -228,6 +415,78 @@ impl GitRunner {
 
     pub fn pull(&self, path: &Path) -> AppResult<()> {
         self.run(Some(path), &["pull", "--ff-only"])?;
+        Ok(())
+    }
+
+    /// 在目录中初始化 Git 仓库，并将未出生分支统一设为 main。
+    pub fn initialize_repository(&self, path: &Path) -> AppResult<()> {
+        if !path.exists() {
+            fs::create_dir_all(path).map_err(|e| {
+                AppError::with_detail("INTERNAL_ERROR", "创建本地目录失败。", e.to_string())
+            })?;
+        }
+        if !path.is_dir() {
+            return Err(AppError::new("BAD_REQUEST", "目标路径不是文件夹。"));
+        }
+        if !is_git_repo(path) {
+            self.run(Some(path), &["init"])?;
+            self.run(Some(path), &["symbolic-ref", "HEAD", "refs/heads/main"])?;
+        }
+        Ok(())
+    }
+
+    /// 将已有文件夹连接到指定 GitHub 仓库。不会下载、移动或覆盖文件。
+    pub fn connect_existing_folder(
+        &self,
+        path: &Path,
+        expected_full_name: &str,
+        initialize: bool,
+    ) -> AppResult<()> {
+        if !path.exists() {
+            return Err(AppError::new(
+                "NOT_FOUND",
+                "目标文件夹不存在；链接功能只支持已有文件夹。",
+            ));
+        }
+        if !path.is_dir() {
+            return Err(AppError::new("BAD_REQUEST", "目标路径不是文件夹。"));
+        }
+        if !is_git_repo(path) {
+            if !initialize {
+                return Err(AppError::new(
+                    "LINK_NOT_GIT",
+                    "该文件夹尚未初始化 Git 仓库。",
+                ));
+            }
+            self.initialize_repository(path)?;
+        }
+
+        let (remotes, _) = self.run(Some(path), &["remote"])?;
+        if remotes.lines().any(|remote| remote.trim() == "origin") {
+            let (origin, _) = self.run(Some(path), &["remote", "get-url", "origin"])?;
+            match parse_github_full_name(&origin) {
+                Some(name) if name.eq_ignore_ascii_case(expected_full_name) => return Ok(()),
+                Some(name) => {
+                    return Err(AppError::with_detail(
+                        "LINK_MISMATCH",
+                        format!(
+                            "该文件夹已连接到 {name}，与目标仓库 {expected_full_name} 不一致。"
+                        ),
+                        name,
+                    ));
+                }
+                None => {
+                    return Err(AppError::with_detail(
+                        "LINK_NON_GITHUB_REMOTE",
+                        "该文件夹的 origin 不是可识别的 GitHub 地址，请先确认远端配置。",
+                        origin.trim(),
+                    ));
+                }
+            }
+        }
+
+        let url = Self::build_clone_url(expected_full_name, self.token.as_deref());
+        self.run(Some(path), &["remote", "add", "origin", &url])?;
         Ok(())
     }
 }
@@ -260,6 +519,7 @@ pub fn parse_github_full_name(url: &str) -> Option<String> {
 }
 
 /// 读取本地仓库 origin 对应的 full_name。
+#[cfg(test)]
 pub fn remote_full_name(path: &Path) -> AppResult<Option<String>> {
     if !is_git_repo(path) {
         return Ok(None);
@@ -305,31 +565,6 @@ pub fn current_branch(path: &Path) -> Option<String> {
     }
 }
 
-/// 校验目录可关联到指定仓库。
-pub fn assert_linkable(path: &Path, expected_full_name: &str) -> AppResult<()> {
-    if !path.exists() {
-        return Err(AppError::new("NOT_FOUND", "目标路径不存在，无法关联。"));
-    }
-    if !is_git_repo(path) {
-        return Err(AppError::new(
-            "LINK_NOT_GIT",
-            "目标目录不是 git 仓库，无法关联。请更换路径或先清空后重新克隆。",
-        ));
-    }
-    match remote_full_name(path)? {
-        Some(name) if name.eq_ignore_ascii_case(expected_full_name) => Ok(()),
-        Some(name) => Err(AppError::with_detail(
-            "LINK_MISMATCH",
-            format!("目录已存在，但远程仓库是 {name}，与当前要克隆的 {expected_full_name} 不一致。"),
-            name,
-        )),
-        None => Err(AppError::new(
-            "LINK_NO_REMOTE",
-            "无法识别该目录的 GitHub 远程地址，请确认 origin 指向正确仓库后再关联。",
-        )),
-    }
-}
-
 pub fn remove_dir(path: &Path) -> AppResult<()> {
     if path.exists() {
         fs::remove_dir_all(path).map_err(|e| {
@@ -345,27 +580,116 @@ pub fn open_in_explorer(path: &Path) -> AppResult<()> {
         Command::new("explorer.exe")
             .arg(path.as_os_str())
             .spawn()
-            .map_err(|e| {
-                AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string())
-            })?;
+            .map_err(|e| AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string()))?;
     }
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
             .arg(path.as_os_str())
             .spawn()
-            .map_err(|e| {
-                AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string())
-            })?;
+            .map_err(|e| AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string()))?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         Command::new("xdg-open")
             .arg(path.as_os_str())
             .spawn()
-            .map_err(|e| {
-                AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string())
-            })?;
+            .map_err(|e| AppError::with_detail("INTERNAL_ERROR", "打开目录失败", e.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitRunner;
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git should be available");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn clone_status_contains_local_and_remote_branch_tips() {
+        let root = std::env::temp_dir().join(format!("git-mng-status-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create test repository");
+        git(&root, &["init"]);
+        git(&root, &["config", "user.name", "git-mng test"]);
+        git(&root, &["config", "user.email", "git-mng@example.invalid"]);
+        fs::write(root.join("README.md"), "branch status test\n").expect("write fixture");
+        git(&root, &["add", "README.md"]);
+        git(&root, &["commit", "-m", "initial commit"]);
+        git(&root, &["branch", "-M", "main"]);
+        git(&root, &["branch", "feature"]);
+        git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+        let status = GitRunner::new(None, true, None).get_clone_status(&root, false);
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert!(status
+            .local_branches
+            .iter()
+            .any(|branch| branch.name == "main" && branch.current));
+        assert!(status
+            .local_branches
+            .iter()
+            .any(|branch| branch.name == "feature"));
+        assert!(status
+            .remote_branches
+            .iter()
+            .any(|branch| branch.name == "origin/main"));
+        assert!(status
+            .graph
+            .iter()
+            .any(|commit| commit.subject == "initial commit"));
+
+        fs::remove_dir_all(root).expect("remove test repository");
+    }
+
+    #[test]
+    fn link_folder_can_initialize_git_and_add_origin() {
+        let root = std::env::temp_dir().join(format!("git-mng-link-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create link folder");
+        fs::write(root.join("notes.txt"), "keep me\n").expect("write existing file");
+        let runner = GitRunner::new(None, true, None);
+
+        let error = runner
+            .connect_existing_folder(&root, "octocat/hello-world", false)
+            .expect_err("uninitialized folder should require confirmation");
+        assert_eq!(error.code, "LINK_NOT_GIT");
+
+        runner
+            .connect_existing_folder(&root, "octocat/hello-world", true)
+            .expect("initialize and link folder");
+        assert!(root.join(".git").exists());
+        assert_eq!(
+            super::remote_full_name(&root).expect("read origin"),
+            Some("octocat/hello-world".into())
+        );
+        assert!(
+            root.join("notes.txt").exists(),
+            "existing files must be kept"
+        );
+
+        let symbolic_head = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(&root)
+            .output()
+            .expect("read symbolic head");
+        assert_eq!(
+            String::from_utf8_lossy(&symbolic_head.stdout).trim(),
+            "main"
+        );
+        fs::remove_dir_all(root).expect("remove link folder");
+    }
 }

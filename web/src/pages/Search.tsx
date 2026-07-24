@@ -3,6 +3,8 @@ import { api } from '../api';
 import type { GhUser, RepoItem } from '../api';
 import CloneDialog from '../components/CloneDialog';
 import type { CloneTarget } from '../components/CloneDialog';
+import LinkFolderDialog from '../components/LinkFolderDialog';
+import type { LinkTarget } from '../components/LinkFolderDialog';
 import RepoCard from '../components/RepoCard';
 import { Btn, Empty, PageLoading } from '../components/ui';
 import { useToast } from '../components/Toast';
@@ -20,6 +22,7 @@ export default function Search({ user }: { user: GhUser }) {
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<CloneTarget | null>(null);
+  const [linkTarget, setLinkTarget] = useState<LinkTarget | null>(null);
   const [starred, setStarred] = useState<Set<string>>(new Set());
   const [starBusy, setStarBusy] = useState<string | null>(null);
 
@@ -123,6 +126,13 @@ export default function Search({ user }: { user: GhUser }) {
                     private: repo.private,
                   })
                 }
+                onLink={() =>
+                  setLinkTarget({
+                    owner: repo.owner,
+                    repo: repo.name,
+                    private: repo.private,
+                  })
+                }
                 onToggleStar={() => toggleStar(repo)}
               />
             ))}
@@ -153,6 +163,12 @@ export default function Search({ user }: { user: GhUser }) {
             toast.info('非本人仓库：推送可能无权限，仅建议本地使用');
           }
         }}
+      />
+      <LinkFolderDialog
+        open={!!linkTarget}
+        target={linkTarget}
+        defaultOwner={user.login}
+        onClose={() => setLinkTarget(null)}
       />
     </div>
   );

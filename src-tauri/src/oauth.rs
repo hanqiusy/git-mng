@@ -218,10 +218,7 @@ pub async fn poll_device_flow(
         &[
             ("client_id", &cid),
             ("device_code", &device_code),
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ],
     )
     .await?;

@@ -109,14 +109,21 @@ impl GitHubClient {
         Ok(h)
     }
 
-    async fn request(&self, method: reqwest::Method, url: &str, body: Option<Value>) -> AppResult<Value> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<Value>,
+    ) -> AppResult<Value> {
         let headers = self.headers()?;
         let body_clone = body.clone();
         let client = self.client.clone();
         let method2 = method.clone();
         let url2 = url.to_string();
         let res = send_with_retry(|| {
-            let mut req = client.request(method2.clone(), &url2).headers(headers.clone());
+            let mut req = client
+                .request(method2.clone(), &url2)
+                .headers(headers.clone());
             if let Some(b) = body_clone.clone() {
                 req = req.json(&b);
             }
@@ -132,18 +139,16 @@ impl GitHubClient {
         if text.is_empty() || status.as_u16() == 204 {
             return Ok(Value::Null);
         }
-        serde_json::from_str(&text).map_err(|e| {
-            AppError::with_detail("GH_HTTP", "解析 GitHub 响应失败", e.to_string())
-        })
+        serde_json::from_str(&text)
+            .map_err(|e| AppError::with_detail("GH_HTTP", "解析 GitHub 响应失败", e.to_string()))
     }
 
     pub async fn get_user(&self) -> AppResult<GhUser> {
         let v = self
             .request(reqwest::Method::GET, &format!("{API_BASE}/user"), None)
             .await?;
-        serde_json::from_value(v).map_err(|e| {
-            AppError::with_detail("GH_HTTP", "解析用户信息失败", e.to_string())
-        })
+        serde_json::from_value(v)
+            .map_err(|e| AppError::with_detail("GH_HTTP", "解析用户信息失败", e.to_string()))
     }
 
     pub async fn list_my_repos(&self) -> AppResult<Vec<RepoItem>> {
@@ -163,6 +168,20 @@ impl GitHubClient {
             page += 1;
         }
         Ok(all)
+    }
+
+    pub async fn get_repo(&self, owner: &str, repo: &str) -> AppResult<RepoItem> {
+        let value = self
+            .request(
+                reqwest::Method::GET,
+                &format!("{API_BASE}/repos/{owner}/{repo}"),
+                None,
+            )
+            .await?;
+        let repo: GhRepo = serde_json::from_value(value).map_err(|error| {
+            AppError::with_detail("GH_HTTP", "解析仓库信息失败", error.to_string())
+        })?;
+        Ok(RepoItem::from(repo))
     }
 
     pub async fn search_repos(
@@ -186,11 +205,13 @@ impl GitHubClient {
     }
 
     pub async fn list_branches(&self, owner: &str, repo: &str) -> AppResult<Vec<String>> {
-        self.list_names(&format!("{API_BASE}/repos/{owner}/{repo}/branches")).await
+        self.list_names(&format!("{API_BASE}/repos/{owner}/{repo}/branches"))
+            .await
     }
 
     pub async fn list_tags(&self, owner: &str, repo: &str) -> AppResult<Vec<String>> {
-        self.list_names(&format!("{API_BASE}/repos/{owner}/{repo}/tags")).await
+        self.list_names(&format!("{API_BASE}/repos/{owner}/{repo}/tags"))
+            .await
     }
 
     async fn list_names(&self, base: &str) -> AppResult<Vec<String>> {
@@ -231,9 +252,8 @@ impl GitHubClient {
                 })),
             )
             .await?;
-        let repo: GhRepo = serde_json::from_value(v).map_err(|e| {
-            AppError::with_detail("GH_HTTP", "解析新建仓库失败", e.to_string())
-        })?;
+        let repo: GhRepo = serde_json::from_value(v)
+            .map_err(|e| AppError::with_detail("GH_HTTP", "解析新建仓库失败", e.to_string()))?;
         Ok(RepoItem::from(repo))
     }
 

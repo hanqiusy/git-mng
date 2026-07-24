@@ -1,6 +1,8 @@
 use crate::error::AppResult;
 use crate::store::Settings;
+#[cfg(windows)]
 use crate::util::hide_console;
+#[cfg(windows)]
 use std::process::Command;
 
 /// 解析当前应使用的代理 URL；无代理返回 None。

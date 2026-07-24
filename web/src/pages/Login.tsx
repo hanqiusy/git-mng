@@ -3,6 +3,7 @@ import { api } from '../api';
 import type { AccountInfo, GhUser, Settings } from '../api';
 import { Btn } from '../components/ui';
 import { useToast } from '../components/Toast';
+import { openExternal } from '../lib/openExternal';
 
 interface LoginProps {
   onLogin: (user: GhUser) => void;
@@ -17,19 +18,6 @@ const PROXY_OPTIONS: { key: ProxyMode; label: string }[] = [
   { key: 'custom', label: '自定义' },
   { key: 'none', label: '直连' },
 ];
-
-async function openExternal(url: string) {
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    try {
-      const { open } = await import('@tauri-apps/plugin-shell');
-      await open(url);
-      return;
-    } catch {
-      /* 插件不可用时降级 */
-    }
-  }
-  window.open(url, '_blank', 'noopener,noreferrer');
-}
 
 /** F1 登录页：多账号一键登录 + OAuth + 网络设置 */
 export default function Login({ onLogin }: LoginProps) {

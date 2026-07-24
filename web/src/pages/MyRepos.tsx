@@ -3,6 +3,8 @@ import { api } from '../api';
 import type { GhUser, RepoItem } from '../api';
 import CloneDialog from '../components/CloneDialog';
 import type { CloneTarget } from '../components/CloneDialog';
+import LinkFolderDialog from '../components/LinkFolderDialog';
+import type { LinkTarget } from '../components/LinkFolderDialog';
 import Modal from '../components/Modal';
 import RepoCard from '../components/RepoCard';
 import { Btn, Empty, PageLoading } from '../components/ui';
@@ -26,6 +28,7 @@ export default function MyRepos({ user }: { user: GhUser }) {
   const [q, setQ] = useState('');
   const [sort, setSort] = useState<SortKey>('updated');
   const [cloneTarget, setCloneTarget] = useState<CloneTarget | null>(null);
+  const [linkTarget, setLinkTarget] = useState<LinkTarget | null>(null);
   const [starred, setStarred] = useState<Set<string>>(new Set());
   const [starBusy, setStarBusy] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -148,6 +151,13 @@ export default function MyRepos({ user }: { user: GhUser }) {
                   private: repo.private,
                 })
               }
+              onLink={() =>
+                setLinkTarget({
+                  owner: repo.owner,
+                  repo: repo.name,
+                  private: repo.private,
+                })
+              }
               onToggleStar={() => toggleStar(repo)}
             />
           ))}
@@ -158,6 +168,13 @@ export default function MyRepos({ user }: { user: GhUser }) {
         target={cloneTarget}
         onClose={() => setCloneTarget(null)}
         onCloned={() => load(visibility)}
+      />
+      <LinkFolderDialog
+        open={!!linkTarget}
+        target={linkTarget}
+        defaultOwner={user.login}
+        onClose={() => setLinkTarget(null)}
+        onLinked={() => load(visibility)}
       />
       <CreateRepoModal
         open={showCreate}

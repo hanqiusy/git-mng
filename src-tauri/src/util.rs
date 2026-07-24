@@ -5,12 +5,12 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 /// Windows 下隐藏子进程控制台，避免 git/reg 等频繁闪窗。
-pub fn hide_console(cmd: &mut Command) {
+pub fn hide_console(_cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        _cmd.creation_flags(CREATE_NO_WINDOW);
     }
 }
 

@@ -67,13 +67,8 @@ async fn finish_login(state: &AppState, token: String) -> AppResult<GhUser> {
 
 #[tauri::command]
 pub async fn auth_device_start(state: State<'_, AppState>) -> AppResult<DeviceStartResult> {
-    let settings = state
-        .store
-        .lock().await
-        .get_settings();
-    let mut oauth = state
-        .oauth
-        .lock().await;
+    let settings = state.store.lock().await.get_settings();
+    let mut oauth = state.oauth.lock().await;
     oauth::start_device_flow(&mut oauth, &settings).await
 }
 
@@ -89,14 +84,9 @@ pub async fn auth_device_poll(
     args: SessionArg,
 ) -> AppResult<serde_json::Value> {
     let session_id = require_non_empty(&args.session_id, "sessionId")?;
-    let settings = state
-        .store
-        .lock().await
-        .get_settings();
+    let settings = state.store.lock().await.get_settings();
     let outcome = {
-        let mut oauth = state
-            .oauth
-            .lock().await;
+        let mut oauth = state.oauth.lock().await;
         oauth::poll_device_flow(&mut oauth, &settings, &session_id).await?
     };
     match outcome {
@@ -121,7 +111,10 @@ pub struct LoginArg {
 }
 
 #[tauri::command]
-pub async fn auth_login(state: State<'_, AppState>, args: LoginArg) -> AppResult<serde_json::Value> {
+pub async fn auth_login(
+    state: State<'_, AppState>,
+    args: LoginArg,
+) -> AppResult<serde_json::Value> {
     let token = require_non_empty(&args.token, "token")?;
     let user = finish_login(&state, token).await?;
     Ok(json!({ "user": user }))
@@ -264,9 +257,7 @@ pub async fn list_repos(
                     .unwrap_or(false)
         });
     }
-    let store = state
-        .store
-        .lock().await;
+    let store = state.store.lock().await;
     for r in &mut repos {
         let (cloned, n) = store.is_cloned(&r.full_name);
         r.cloned = Some(cloned);
@@ -308,7 +299,10 @@ pub async fn list_branches(
 ) -> AppResult<serde_json::Value> {
     let (client, _) = make_client(&state).await?;
     let names = client.list_branches(&args.owner, &args.repo).await?;
-    let items: Vec<_> = names.into_iter().map(|name| json!({ "name": name })).collect();
+    let items: Vec<_> = names
+        .into_iter()
+        .map(|name| json!({ "name": name }))
+        .collect();
     Ok(json!({ "items": items }))
 }
 
@@ -319,7 +313,10 @@ pub async fn list_tags(
 ) -> AppResult<serde_json::Value> {
     let (client, _) = make_client(&state).await?;
     let names = client.list_tags(&args.owner, &args.repo).await?;
-    let items: Vec<_> = names.into_iter().map(|name| json!({ "name": name })).collect();
+    let items: Vec<_> = names
+        .into_iter()
+        .map(|name| json!({ "name": name }))
+        .collect();
     Ok(json!({ "items": items }))
 }
 
@@ -336,15 +333,100 @@ pub async fn create_repo(
     args: CreateRepoArg,
 ) -> AppResult<serde_json::Value> {
     let name = require_non_empty(&args.name, "name")?;
-    if !Regex::new(r"^[\w.-]+$").unwrap().is_match(&name) {
+    if !Regex::new(r"^[\w.-]+$").unwrap().is_match(&name) || name.trim_matches('.').is_empty() {
         return Err(AppError::new("BAD_REQUEST", "仓库名不合法"));
     }
     let (client, _) = make_client(&state).await?;
     let repo = client
-        .create_repo(&name, args.description.as_deref().unwrap_or(""), args.private)
+        .create_repo(
+            &name,
+            args.description.as_deref().unwrap_or(""),
+            args.private,
+        )
         .await?;
     state.log("create_repo", &repo.full_name, true, None).await;
     Ok(json!({ "repo": repo }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateLinkedRepoArg {
+    name: String,
+    description: Option<String>,
+    private: bool,
+}
+
+/// 在默认目录创建同名文件夹和 GitHub 空仓库，初始化 Git 并连接 origin。
+#[tauri::command]
+pub async fn create_linked_repo(
+    state: State<'_, AppState>,
+    args: CreateLinkedRepoArg,
+) -> AppResult<serde_json::Value> {
+    let name = require_non_empty(&args.name, "name")?;
+    if !Regex::new(r"^[\w.-]+$").unwrap().is_match(&name) || name.trim_matches('.').is_empty() {
+        return Err(AppError::new("BAD_REQUEST", "仓库名不合法"));
+    }
+
+    let (client, settings) = make_client(&state).await?;
+    let path = normalize_clone_path(
+        &PathBuf::from(&settings.default_clone_root)
+            .join(&name)
+            .to_string_lossy(),
+    )?;
+    let path_str = path.to_string_lossy().into_owned();
+    if path.exists() {
+        return Err(AppError::new(
+            "PATH_EXISTS",
+            "默认目录下已存在同名文件夹，请更换名称，或使用“链接本地文件夹”。",
+        ));
+    }
+    if state.store.lock().await.path_registered(&path_str) {
+        return Err(AppError::new("PATH_EXISTS", "该路径已在本地管理中登记。"));
+    }
+
+    let runner = make_runner(&state).await?;
+    if let Err(error) = runner.initialize_repository(&path) {
+        let _ = gitops::remove_dir(&path);
+        return Err(error);
+    }
+    let repo = match client
+        .create_repo(
+            &name,
+            args.description.as_deref().unwrap_or(""),
+            args.private,
+        )
+        .await
+    {
+        Ok(repo) => repo,
+        Err(error) => {
+            let _ = gitops::remove_dir(&path);
+            return Err(error);
+        }
+    };
+    runner.connect_existing_folder(&path, &repo.full_name, false)?;
+
+    let entry = ClonePath {
+        path: path_str,
+        git_ref: if repo.default_branch.trim().is_empty() {
+            "main".into()
+        } else {
+            repo.default_branch.clone()
+        },
+        ref_type: "branch".into(),
+        added_at: chrono::Utc::now().to_rfc3339(),
+        status: None,
+    };
+    let record = state.store.lock().await.add_clone_path(
+        &repo.owner,
+        &repo.name,
+        &repo.full_name,
+        repo.private,
+        entry,
+    )?;
+    state
+        .log("create_linked_repo", &repo.full_name, true, None)
+        .await;
+    Ok(json!({ "repo": repo, "record": record }))
 }
 
 #[tauri::command]
@@ -361,12 +443,14 @@ pub async fn delete_repo(
         ));
     }
     client.delete_repo(&args.owner, &args.repo).await?;
-    state.log(
-        "delete_repo",
-        &format!("{}/{}", args.owner, args.repo),
-        true,
-        None,
-    ).await;
+    state
+        .log(
+            "delete_repo",
+            &format!("{}/{}", args.owner, args.repo),
+            true,
+            None,
+        )
+        .await;
     Ok(json!({ "ok": true }))
 }
 
@@ -393,13 +477,10 @@ pub async fn unstar_repo(
 #[tauri::command]
 pub async fn list_clones(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     let runner = make_runner(&state).await?;
-    let mut items = state
-        .store
-        .lock().await
-        .list_clones();
+    let mut items = state.store.lock().await.list_clones();
     for entry in &mut items {
         for p in &mut entry.paths {
-            let status = runner.get_clone_status(&PathBuf::from(&p.path));
+            let status = runner.get_clone_status(&PathBuf::from(&p.path), false);
             p.status = Some(serde_json::to_value(status).unwrap_or(json!({})));
         }
     }
@@ -432,9 +513,7 @@ pub async fn clone_repo(
     let full_name = format!("{owner}/{repo}");
 
     {
-        let store = state
-            .store
-            .lock().await;
+        let store = state.store.lock().await;
         if store.path_registered(&path_str) {
             return Err(AppError::new(
                 "PATH_EXISTS",
@@ -445,7 +524,7 @@ pub async fn clone_repo(
     if gitops::is_non_empty_dir(&path) {
         return Err(AppError::new(
             "PATH_NOT_EMPTY",
-            "目标目录已存在。可选择关联该目录，或更换其他路径。",
+            "目标目录已存在且非空，请更换目标路径；如需使用已有文件夹，请使用“链接本地文件夹”。",
         ));
     }
 
@@ -464,62 +543,6 @@ pub async fn clone_repo(
         added_at: chrono::Utc::now().to_rfc3339(),
         status: None,
     };
-    let record = state
-        .store
-        .lock()
-        .await
-        .add_clone_path(
-            &owner,
-            &repo,
-            &full_name,
-            args.private.unwrap_or(false),
-            entry,
-        )?;
-    state.log("clone", &full_name, true, None).await;
-    Ok(json!({ "record": record }))
-}
-
-/// 将已存在的本地目录关联为克隆记录（不执行 git clone）。
-#[tauri::command]
-pub async fn link_clone(
-    state: State<'_, AppState>,
-    args: CloneArg,
-) -> AppResult<serde_json::Value> {
-    let _ = require_token(&state).await?;
-    let owner = require_non_empty(&args.owner, "owner")?;
-    let repo = require_non_empty(&args.repo, "repo")?;
-    let path = normalize_clone_path(&args.path)?;
-    let path_str = path.to_string_lossy().into_owned();
-    let full_name = format!("{owner}/{repo}");
-
-    {
-        let store = state.store.lock().await;
-        if store.path_registered(&path_str) {
-            return Err(AppError::new(
-                "PATH_EXISTS",
-                "该路径已在克隆记录中，无需重复关联。",
-            ));
-        }
-    }
-
-    gitops::assert_linkable(&path, &full_name)?;
-
-    let mut git_ref = args.git_ref;
-    let mut ref_type = args.ref_type;
-    if git_ref.trim().is_empty() {
-        if let Some(b) = gitops::current_branch(&path) {
-            git_ref = b;
-            ref_type = "branch".into();
-        }
-    }
-
-    let entry = ClonePath {
-        path: path_str,
-        git_ref,
-        ref_type,
-        added_at: chrono::Utc::now().to_rfc3339(),
-        status: None,
-    };
     let record = state.store.lock().await.add_clone_path(
         &owner,
         &repo,
@@ -527,13 +550,85 @@ pub async fn link_clone(
         args.private.unwrap_or(false),
         entry,
     )?;
-    state.log("link", &full_name, true, None).await;
+    state.log("clone", &full_name, true, None).await;
+    Ok(json!({ "record": record }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkFolderArg {
+    owner: String,
+    repo: String,
+    path: String,
+    initialize: bool,
+}
+
+/// 仅链接已有文件夹；未初始化 Git 时由前端二次确认后传 initialize=true。
+#[tauri::command]
+pub async fn link_local_folder(
+    state: State<'_, AppState>,
+    args: LinkFolderArg,
+) -> AppResult<serde_json::Value> {
+    let owner = require_non_empty(&args.owner, "owner")?;
+    let repo = require_non_empty(&args.repo, "repo")?;
+    let path = normalize_clone_path(&args.path)?;
+    let path_str = path.to_string_lossy().into_owned();
+    let (client, _) = make_client(&state).await?;
+    let remote_repo = client.get_repo(&owner, &repo).await?;
+    let full_name = remote_repo.full_name.clone();
+
+    if state.store.lock().await.path_registered(&path_str) {
+        return Err(AppError::new(
+            "PATH_EXISTS",
+            "该路径已在本地管理中登记，无需重复链接。",
+        ));
+    }
+
+    let runner = make_runner(&state).await?;
+    runner.connect_existing_folder(&path, &full_name, args.initialize)?;
+    let git_ref = gitops::current_branch(&path).unwrap_or_else(|| "main".into());
+    let entry = ClonePath {
+        path: path_str,
+        git_ref,
+        ref_type: "branch".into(),
+        added_at: chrono::Utc::now().to_rfc3339(),
+        status: None,
+    };
+    let record = state.store.lock().await.add_clone_path(
+        &remote_repo.owner,
+        &remote_repo.name,
+        &full_name,
+        remote_repo.private,
+        entry,
+    )?;
+    state.log("link_local_folder", &full_name, true, None).await;
     Ok(json!({ "record": record }))
 }
 
 #[derive(Deserialize)]
 pub struct PathArg {
     path: String,
+}
+
+#[tauri::command]
+pub async fn refresh_clone_status(
+    state: State<'_, AppState>,
+    args: PathArg,
+) -> AppResult<serde_json::Value> {
+    let path = normalize_clone_path(&args.path)?;
+    let path_str = path.to_string_lossy().into_owned();
+    let _ = state.store.lock().await.get_clone_path_entry(&path_str)?;
+    let runner = make_runner(&state).await?;
+    let status = tokio::task::spawn_blocking(move || runner.get_clone_status(&path, true))
+        .await
+        .map_err(|error| {
+            AppError::with_detail(
+                "INTERNAL_ERROR",
+                "刷新远端分支状态失败。",
+                error.to_string(),
+            )
+        })?;
+    Ok(json!({ "status": status }))
 }
 
 #[tauri::command]
@@ -544,16 +639,11 @@ pub async fn delete_clone(
     let path = normalize_clone_path(&args.path)?;
     let path_str = path.to_string_lossy().into_owned();
     {
-        let store = state
-            .store
-            .lock().await;
+        let store = state.store.lock().await;
         let _ = store.get_clone_path_entry(&path_str)?;
     }
     gitops::remove_dir(&path)?;
-    state
-        .store
-        .lock().await
-        .remove_clone_path(&path_str)?;
+    state.store.lock().await.remove_clone_path(&path_str)?;
     state.log("delete_clone", &path_str, true, None).await;
     Ok(json!({ "ok": true }))
 }
@@ -562,10 +652,7 @@ pub async fn delete_clone(
 pub async fn reclone(state: State<'_, AppState>, args: PathArg) -> AppResult<serde_json::Value> {
     let path = normalize_clone_path(&args.path)?;
     let path_str = path.to_string_lossy().into_owned();
-    let (entry, cp) = state
-        .store
-        .lock().await
-        .get_clone_path_entry(&path_str)?;
+    let (entry, cp) = state.store.lock().await.get_clone_path_entry(&path_str)?;
 
     gitops::remove_dir(&path)?;
     let runner = make_runner(&state).await?;
@@ -583,10 +670,7 @@ pub async fn reclone(state: State<'_, AppState>, args: PathArg) -> AppResult<ser
 pub async fn push_repo(state: State<'_, AppState>, args: PathArg) -> AppResult<serde_json::Value> {
     let path = normalize_clone_path(&args.path)?;
     let path_str = path.to_string_lossy().into_owned();
-    let _ = state
-        .store
-        .lock().await
-        .get_clone_path_entry(&path_str)?;
+    let _ = state.store.lock().await.get_clone_path_entry(&path_str)?;
     make_runner(&state).await?.push(&path)?;
     state.log("push", &path_str, true, None).await;
     Ok(json!({ "ok": true }))
@@ -596,10 +680,7 @@ pub async fn push_repo(state: State<'_, AppState>, args: PathArg) -> AppResult<s
 pub async fn pull_repo(state: State<'_, AppState>, args: PathArg) -> AppResult<serde_json::Value> {
     let path = normalize_clone_path(&args.path)?;
     let path_str = path.to_string_lossy().into_owned();
-    let _ = state
-        .store
-        .lock().await
-        .get_clone_path_entry(&path_str)?;
+    let _ = state.store.lock().await.get_clone_path_entry(&path_str)?;
     make_runner(&state).await?.pull(&path)?;
     state.log("pull", &path_str, true, None).await;
     Ok(json!({ "ok": true }))
@@ -614,10 +695,7 @@ pub async fn open_dir(args: PathArg) -> AppResult<serde_json::Value> {
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
-    let settings = state
-        .store
-        .lock().await
-        .get_settings();
+    let settings = state.store.lock().await.get_settings();
     Ok(json!({ "settings": settings }))
 }
 
@@ -635,18 +713,12 @@ pub async fn update_settings(
             ));
         }
     }
-    let settings = state
-        .store
-        .lock().await
-        .update_settings(patch)?;
+    let settings = state.store.lock().await.update_settings(patch)?;
     Ok(json!({ "settings": settings }))
 }
 
 #[tauri::command]
 pub async fn get_logs(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
-    let logs = state
-        .logs
-        .lock().await
-        .list();
+    let logs = state.logs.lock().await.list();
     Ok(json!({ "logs": logs }))
 }

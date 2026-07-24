@@ -61,6 +61,30 @@ export interface RepoStatus {
   ahead: number | null;
   behind: number | null;
   lastCommit: string | null;
+  localBranches: BranchInfo[];
+  remoteBranches: BranchInfo[];
+  graph: GraphCommit[];
+  remoteRefreshed: boolean;
+  remoteRefreshError: string | null;
+}
+
+export interface GraphCommit {
+  id: string;
+  shortId: string;
+  parents: string[];
+  date: string;
+  subject: string;
+  refs: string[];
+}
+
+export interface BranchInfo {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  commit: string;
+  subject: string;
 }
 
 export interface ClonePath {
@@ -176,6 +200,10 @@ export const api = {
     call<{ repo: RepoItem }>('create_repo', {
       args: { name, description, private: isPrivate },
     }),
+  createLinkedRepo: (name: string, description: string, isPrivate: boolean) =>
+    call<{ repo: RepoItem; record: CloneRecord }>('create_linked_repo', {
+      args: { name, description, private: isPrivate },
+    }),
 
   deleteRepo: (owner: string, repo: string) =>
     call<{ ok: true }>('delete_repo', { args: { owner, repo } }),
@@ -186,6 +214,8 @@ export const api = {
     call<{ ok: true }>('unstar_repo', { args: { owner, repo } }),
 
   listClones: () => call<{ items: CloneRecord[] }>('list_clones'),
+  refreshCloneStatus: (path: string) =>
+    call<{ status: RepoStatus }>('refresh_clone_status', { args: { path } }),
   clone: (opts: {
     owner: string;
     repo: string;
@@ -195,19 +225,13 @@ export const api = {
     shallow: boolean;
     private?: boolean;
   }) => call<{ record: CloneRecord }>('clone_repo', { args: opts }),
-  /** 目录已存在时：校验远程后写入克隆记录，不执行 git clone */
-  linkClone: (opts: {
+  linkLocalFolder: (opts: {
     owner: string;
     repo: string;
     path: string;
-    ref: string;
-    refType: 'branch' | 'tag';
-    shallow?: boolean;
     private?: boolean;
-  }) =>
-    call<{ record: CloneRecord }>('link_clone', {
-      args: { ...opts, shallow: opts.shallow ?? false },
-    }),
+    initialize: boolean;
+  }) => call<{ record: CloneRecord }>('link_local_folder', { args: opts }),
   deleteClone: (path: string) => call<{ ok: true }>('delete_clone', { args: { path } }),
   reclone: (path: string) => call<{ ok: true }>('reclone', { args: { path } }),
   push: (path: string) => call<{ ok: true }>('push_repo', { args: { path } }),
