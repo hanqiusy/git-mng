@@ -10,6 +10,7 @@
     "dev:web": "npm run dev -w web -- --host 127.0.0.1",
     "build": "npm run build -w web",
     "build:desktop": "tauri build --no-bundle && node scripts/package-portable.mjs",
+    "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
     "package:portable": "node scripts/package-portable.mjs",
     "generate-icons": "node scripts/generate-icons.mjs",
     "tauri": "tauri"
