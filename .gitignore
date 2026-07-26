@@ -5,6 +5,8 @@ node_modules/
 dist/
 web/dist/
 dist-portable/
+dist-windows/
+.tools/
 src-tauri/target/
 src-tauri/gen/
 
